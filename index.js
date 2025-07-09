@@ -2,14 +2,16 @@ const express = require("express");
 const app = express();
 const cors = require("cors");
 const loger = require("morgan");
-const User = require("./Models/user");
+const Product = require("./Models/product");
 require("./db/config");
 const bcrypt = require("bcrypt");
 const saltRounds = 10;
+const salt=10
 const nodemailer = require("nodemailer");
 const secretKey = "sahaid";
 var jwt = require("jsonwebtoken");
 const register = require("./Models/Register");
+const { default: mongoose } = require("mongoose");
 app.use(express.json());
 app.use(loger("dev"));
 app.use(cors());
@@ -17,52 +19,72 @@ app.use(cors());
 // Signup Api
 app.post("/register", async (req, res) => {
   const { name, email, password } = req.body;
-  const isExist = await register.findOne({ email: email });
-  if (isExist) {
-    return res.send({ result: "User Already Exist", code: 300 });
-  } else {
-    bcrypt.genSalt(10, function (err, salt) {
-      bcrypt.hash(password, salt, async function (err, hash) {
-        const data = {
-          name: name,
-          email: email,
-          password: hash,
-        };
-        let users = new register(data);
-        let result = await users.save();
-        if (result) {
-          res.send({ message: "Register SuccessFully", code: 200 });
-        }
-      });
+
+  try {
+    // Check if user already exists
+    const isExist = await register.findOne({email: email });
+    if (isExist) {
+      return res.send({ message: "User Already Exists", code: 300 });
+    }
+
+    // Hash the password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // Create new user
+    const newUser = new register({
+      name,
+      email,
+      password: hashedPassword,
     });
+
+    // Save user to database
+    const result = await newUser.save();
+    res.send({ message: "Registration Successful", code: 200 });
+  } catch (error) {
+    console.error(error);
+    res.send({ message: "Internal Server Error", code: 500 });
   }
 });
 // Login Api
+
+
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  const isExist = await register.findOne({ email: email });
-  if (isExist) {
-    bcrypt.compare(password, isExist.password, async function (err, result) {
-      if (result) {
-        const token = jwt.sign({ data: isExist._id }, secretKey, {
-          expiresIn: 60 * 60,
-        });
-        isExist.token = token;
-        await isExist.save();
-        res.send({
-          statusCode: 200,
-          result: "Login SuccessFully",
-          token: token,
-          user: isExist,
-        });
-      } else {
-        res.send({ statusCode: 300, result: "password not match" });
-      }
+
+  try {
+    // Check if user exists
+    const user = await register.findOne({ email });
+    if (!user) {
+      return res.send({ statusCode: 404, message: "User Not Found" });
+    }
+
+    // Compare the password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.send({ statusCode: 400, message: "Password does not match" });
+    }
+
+    // Create a token
+    const token = jwt.sign({ id: user._id }, secretKey, { expiresIn: "1h" });
+
+    // Optionally, you can save the token in the user document
+    user.token = token;
+    await user.save();
+
+    res.send({
+      statusCode: 200,
+      message: "Login Successfully",
+      token,
+      user,
     });
-  } else {
-    res.send({ statusCode: 404, result: "User Not Found" });
+  } catch (error) {
+    console.error(error);
+    res.send({ statusCode: 500, message: "Internal Server Error" });
   }
 });
+
+
 
 app.post("/profile", verifyToken, (req, res) => {
   res.send("profile");
@@ -104,145 +126,243 @@ async function verifyToken(req, res, next) {
   }
 }
 
-// Mail Sent
-app.post("/forgotPassword", async (req, res) => {
-  const { email } = req.body;
-  const isExistEmail = await register.findOne({ email: email });
-  if (isExistEmail) {
-    let otp = "";
-    for (let i = 1; i <= 6; i++) {
-      otp += Math.floor(Math.random() * 9);
+
+
+// forgotPassword........................
+// Function to generate a 4-digit OTP
+// otp Send
+function generateOtp() {
+  return Math.floor(1000 + Math.random() * 9000).toString();
+}
+async function sendOtpEmail(recipientEmail, otp, firstName) {
+
+  // Create a transporter object using SMTP transport
+  let transporter = nodemailer.createTransport({
+    service: "gmail", // or any other email service provider
+    auth: {
+      user: "snasim1786@gmail.com", // replace with your email
+      pass: "pmujgadapmriwrll", // replace with your email password
+    },
+  });
+
+  // Email options
+  let mailOptions = {
+    from: transporter.options.auth.user,
+    to: recipientEmail, // Use recipientEmail here
+    subject: "Your OTP Code", // Subject line
+    html: `
+        <div style="font-family: Arial, sans-serif; text-align: center; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9;">
+          <h2 style="color: #333;">Your OTP Code</h2>
+          <p style="font-size: 18px; color: #555;">Hi ${firstName} !</p>
+          <p style="font-size: 16px; color: #333;">Your OTP code is <strong style="font-size: 24px; color: #007BFF;">${otp}</strong>.</p>
+          <p style="color: #777;">Please use this code to verify your identity.</p>
+          <p style="font-size: 12px; color: #999;">If you did not request this code, please ignore this email.</p>
+          <footer style="margin-top: 20px; font-size: 12px; color: #aaa;">
+            &copy; ${new Date().getFullYear()} Your Company Name
+          </footer>
+        </div>
+      `,
+  };
+
+  // Send email
+  try {
+    let info = await transporter.sendMail(mailOptions);
+    console.log("Email sent: " + info.response);
+  } catch (error) {
+    console.error("Error sending email:", error);
+    throw new Error("Failed to send OTP email");
+  }
+}
+
+
+app.post ("/forgotpassword" ,async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // Validate email input
+  
+    const isExist = await register.findOne({ email: email });
+
+    if (!isExist) {
+      return res.send({ message: "User Not Found", statusCode: 404 });
     }
-    const transport = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: "snasim1786@gmail.com",
-        pass: "pmujgadapmriwrll",
-      },
-    });
+  
+  
 
-    console.log("transport", transport);
-    let mailDetails = {
-      from: transport.options.auth.user,
-      to: `${email}`,
-      subject: "Test mail",
-      text: ` Lorem ipsum dolor, sit amet consectetur adipisicing elit. Voluptate vitae ad esse fugiat eos quae beatae minima mollitia praesentium aliquam ${otp} `,
-    };
-
-    console.log("mailDetails", mailDetails);
-    transport.sendMail(mailDetails, async function (err, data) {
-      console.log("data", data);
-      if (err) {
-        res.send({ message: "Error Occurs" });
-      } else {
-        isExistEmail.otp = otp;
-        await isExistEmail.save();
-        res.send({ message: "Email sent successfully", errorCode: 200, otpData: isExistEmail });
-      }
-    });
-  } else {
-    res.send({ message: "User Not Found", errorCode: 404 });
+    // Generate OTP and send email
+    const otp = generateOtp();
+    await sendOtpEmail(email, otp, isExist.name,);
+    isExist.otp = otp;
+    isExist.otpGeneratedAt = Date.now();
+    await isExist.save();
+    // Respond to the client
+    res.send({ message: "OTP sent successfully", email:isExist.email ,statusCode:200}); // You might want to store OTP in the database or cache for validation later
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Internal Server Error", statusCode: 500 });
   }
 });
 
-// optMatch
-
-app.post("/otpMatch", async (req, res) => {
-  const { otp, id } = req.body;
-  // console.log("otpnew", otp);
-  const isExistEmail = await register.findOne({ _id: id });
-  console.log("otp", isExistEmail);
-  if (isExistEmail) {
-    if (isExistEmail?.otp == otp) {
-      res.send({ message: "otp Match", errorCode: 200 });
-    } else {
-      res.send({ message: "otp Not Match", errorCode: 300 });
-    }
-  } else {
-    res.send({ message: "User Not Found", errorCode: 404 });
-  }
-});
-// setPassword
-app.post("/setPassword", async (req, res) => {
-  const { id, password } = req.body;
-  console.log("set", id);
-  const userFound = await register.findOne({ _id: id });
-  console.log("res", userFound);
-
-  if (userFound) {
-    bcrypt.genSalt(10, function (err, salt) {
-      bcrypt.hash(password, salt, async function (err, hash) {
-        let updatePassword = await register.updateOne(
-          { _id: id },
-          { $set: { password: hash } }
-        );
-        if (updatePassword) {
-          res.send({ message: "Update SuccessFully", errorCode: 200 });
-        }
-      });
-    });
-  } else {
-    res.send({ message: "User Not Found", errorCode: 404 });
-  }
-});
-
-// Insert Users
-app.post("/addUser", async (req, res) => {
-  const { name, adress, mobileNo, dateOfBith, email } = req.body;
-  const isExist = await register.findOne({ email: email });
-  if (isExist) {
-    const data = {
-      userId: isExist._id,
-      name: name,
-      adress: adress,
-      mobileNo: mobileNo,
-      dateOfBith: dateOfBith,
-
-    }
-    let addUser = new User(data)
-    let result = await addUser.save()
-    if (result) {
-      return res.send({result:result, message: "Profile Upload", errorCode: 200 })
-    } else {
-      return res.send({ message: " Error in Profile Upload", errorCode: 300 })
-    }
-  }
-  else {
-    return res.send({ message: "Email Not Exist", errorCode: 404 })
-  }
-})
-
-app.get("/addUserList", async (req, res) => {
-  const  userId  = req.query.id
-console.log(userId,"userId");
-  const isExist = await User.find({ userId: userId })
-  console.log(isExist,"isExist");
-  if (isExist) {
+app.post("/resetPassword", async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
     
-    return res.send({ result: isExist, errorCode: 200 })
-  } else {
-   return res.send({ result: "NO Product", errorCode: 300 })
-  }
-})
-// Delete Api
 
-app.delete("/deleteProfile", async (req, res) => {
-  const { id } = req.body
-  // console.log("id", id);
-  const proFileDelete = await User.deleteOne({ _id: id })
-  if (proFileDelete) {
-    return res.send({ result: "Profile Delete SuccessFullt" })
+    // Find the user
+    const userDoc = await register.findOne({ email: email });
+    if (!userDoc) {
+      return res
+        .send({ message: "User Not Found", errorCode: 404 });
+    }
+
+    // Check if OTP is valid
+    if (userDoc.otp !== otp) {
+      return res.send({ message: "Invalid OTP", errorCode: 301 });
+    }
+
+    // Check if OTP has expired (5 minutes = 300000 milliseconds)
+    const otpGeneratedAt = userDoc.otpGeneratedAt;
+    const otpExpiryDuration = 5 * 60 * 1000; // 5 minutes in milliseconds
+    const currentTime = Date.now();
+
+    if (currentTime - otpGeneratedAt > otpExpiryDuration) {
+      return res
+        .send({ message: "OTP has expired", errorCode: 400 });
+    }
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    // Update the user's password (ensure you hash the password)
+    userDoc.password = hashedPassword; // Make sure to hash the password before saving
+    userDoc.otp = null; // Clear OTP
+    userDoc.otpGeneratedAt = null; // Clear OTP expiry time
+    await userDoc.save();
+
+    // Respond to the client
+    res.send({ message: "Password reset successfully",errorCode:200 });
+  } catch (error) {
+    console.error(error);
+    res.send({ message: "Internal Server Error", errorCode: 500 });
   }
-  else {
-    res.send({ result: "Something Went Wrong" })
+});
+
+// Insert Product
+// app.post("/add-product", async (req, res) => {
+//   const {email, name, brand, price, descriptions } = req.body;
+//   const isExist = await register.findOne({ email: email });
+//   if (isExist) {
+//     const data = {
+//       userId: isExist._id,
+//       name: name,
+//       brand: brand,
+//       price: price,
+//       descriptions: descriptions,
+
+//     }
+//     let addProduct = new Product(data)
+//     let result = await addProduct.save()
+//     if (result) {
+//       return res.send({result:result, message: "Product Upload", errorCode: 200 })
+//     } else {
+//       return res.send({ message: " Error in Product Upload", errorCode: 300 })
+//     }
+//   }
+//   else {
+//     return res.send({ message: "Email Not Exist", errorCode: 404 })
+//   }
+// })
+app.post('/add-product', async (req, res) => {
+  const {email, name, price, brand, descriptions } = req.body;
+  // Create a new product using the Product model
+const isexistUser= await register.findOne({email:email})
+
+if (isexistUser) {
+  try {
+    const newProduct = new Product({
+      userId:isexistUser._id,
+      name,
+      price,
+      brand,
+      descriptions,
+    });
+    await newProduct.save();
+    res.send({result:newProduct,errorCode:200,message:"Product Add"});
   }
-})
+    catch (err) {
+      res.send({errorCode:300,message:"Error"});
+    }
+}
+  
+else{
+  res.send({errorCode:400,message:"Something Went Wrong"});
+ 
+}
+    
+  
+});
+
+
+
+
+
+
+
+
+app.get("/adProductList", async (req, res) => {
+  try {
+    const userId = req.query.id;
+
+    // Ensure userId is provided
+    if (!userId) {
+      return res.status(400).json({ result: "User ID is required", errorCode: 400 });
+    }
+
+    const products = await Product.find({ userId });
+
+    if (products.length > 0) {
+      return res.status(200).json({ result: products, errorCode: 200 });
+    } else {
+      return res.status(404).json({ result: "No products found", errorCode: 404 });
+    }
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ result: "Internal Server Error", errorCode: 500 });
+  }
+});
+
+// Example for handling delete requests:
+app.delete("/deleteProduct/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ result: "Invalid product ID", errorCode: 400 });
+    }
+
+    const product = await Product.findById(id);
+    if (!product) {
+      return res.status(404).json({ result: "Product not found", errorCode: 404 });
+    }
+
+    await Product.deleteOne({ _id: id });
+
+    // Send back a response in JSON format
+    return res.status(200).json({ result: "Product deleted successfully", errorCode: 200 });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ result: "Internal server error", errorCode: 500 });
+  }
+});
+
 // Edit Api
-app.get("/getProfileList/:id", async (req, res) => {
+
+
+
+app.get("/get-edit-product/:id", async (req, res) => {
   const { id } = req.params
-  console.log(id, "id");
-  const getProfile = await User.find({ _id: id })
-  // console.log(getProfile, "getProfile");
+  console.log(id);
+  
+  const getProfile = await Product.find({ _id: id })
+  console.log(getProfile, "getProfile..........");
   if (getProfile) {
     return res.send({ result: getProfile, errorCode: 200 })
   } else {
@@ -251,33 +371,17 @@ app.get("/getProfileList/:id", async (req, res) => {
 
 })
 
-app.put("/profileEdit", async (req, res) => {
-  const { id } = req.body
-  const EditProfile = await User.updateOne({ _id: id }, { $set: req.body })
-  console.log("EditProfile", EditProfile);
+app.put("/edit-product/:id", async (req, res) => {
+  const  {id}  = req.params
+  console.log(id,"......");
+  
+  const EditProfile = await Product.updateOne({ _id: id }, { $set: req.body })
   if (EditProfile) {
     return res.send({ result: EditProfile, errorCode: 200 })
   } else {
     return res.send({ result: "Somthing Wrong" })
   }
 })
-
-
-
-
-// app.get("/getUser", async (req,res)=>{
-
-//   const {email} = req.body;
-
-//   const isExitUser =await register.findOne({email:email}) ;
-
-//   if(isExitUser){
-
-//   }
-// })
-
-
-
 
 
 app.listen(3000);
